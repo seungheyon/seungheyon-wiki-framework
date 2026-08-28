@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>seungheyon-wiki 참조 그래프</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    color-scheme: light;
+    --surface-1:      #fcfcfb;
+    --page-plane:     #f9f9f7;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --gridline:       #e1e0d9;
+    --border:         rgba(11,11,11,0.10);
+    --panel-bg:       rgba(252,252,251,0.92);
+
+    --c-person:  #2a78d6;
+    --c-company: #eb6834;
+    --c-concept: #1baf7a;
+    --c-index:   #eda100;
+    --c-other:   #e87ba4;
+    --c-raw:     #898781;
+    --c-missing: #d03b3b;
+
+    --edge-color: #c3c2b7;
+    --edge-missing: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --surface-1:      #1a1a19;
+      --page-plane:     #0d0d0d;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --gridline:       #2c2c2a;
+      --border:         rgba(255,255,255,0.10);
+      --panel-bg:       rgba(26,26,25,0.92);
+
+      --c-person:  #3987e5;
+      --c-company: #d95926;
+      --c-concept: #199e70;
+      --c-index:   #c98500;
+      --c-other:   #d55181;
+      --c-raw:     #898781;
+      --c-missing: #e66767;
+
+      --edge-color: #383835;
+      --edge-missing: #e66767;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: var(--page-plane);
+    color: var(--text-primary);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    overflow: hidden;
+  }
+  #canvas-wrap {
+    position: fixed; inset: 0;
+  }
+  canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+  canvas.dragging { cursor: grabbing; }
+
+  .panel {
+    position: fixed;
+    background: var(--panel-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    backdrop-filter: blur(6px);
+    padding: 10px 12px;
+    font-size: 12.5px;
+    color: var(--text-secondary);
+  }
+  #toolbar {
+    top: 12px; left: 12px; right: 12px;
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  }
+  #toolbar h1 {
+    font-size: 13.5px; font-weight: 600; color: var(--text-primary);
+    margin: 0; white-space: nowrap;
+  }
+  #search {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    border-radius: 6px;
+    padding: 5px 8px;
+    font-size: 12.5px;
+    width: 180px;
+  }
+  #search::placeholder { color: var(--text-muted); }
+  .filters { display: flex; gap: 10px; flex-wrap: wrap; }
+  .filters label {
+    display: inline-flex; align-items: center; gap: 5px;
+    cursor: pointer; white-space: nowrap;
+  }
+  .filters input[type="checkbox"] { accent-color: var(--c-person); }
+  .swatch {
+    width: 10px; height: 10px; flex: none;
+  }
+  #stats {
+    margin-left: auto; color: var(--text-muted); white-space: nowrap; font-size: 11.5px;
+  }
+  #legend {
+    bottom: 12px; left: 12px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  #legend .row { display: flex; align-items: center; gap: 7px; }
+  #legend .label { color: var(--text-secondary); }
+  #tooltip {
+    position: fixed;
+    pointer-events: none;
+    background: var(--panel-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 12px;
+    max-width: 280px;
+    display: none;
+    z-index: 10;
+  }
+  #tooltip .t-title { color: var(--text-primary); font-weight: 600; margin-bottom: 2px; }
+  #tooltip .t-meta { color: var(--text-muted); }
+  #hint {
+    bottom: 12px; right: 12px;
+    color: var(--text-muted); font-size: 11px; text-align: right;
+    max-width: 220px;
+  }
+</style>
+</head>
+<body>
+<div id="canvas-wrap"><canvas id="canvas"></canvas></div>
+
+<div class="panel" id="toolbar">
+  <h1>seungheyon-wiki 참조 그래프</h1>
+  <input id="search" type="text" placeholder="페이지 검색..." />
+  <div class="filters" id="type-filters"></div>
+  <div id="stats"></div>
+</div>
+
+<div class="panel" id="legend"></div>
+<div class="panel" id="hint">
+  드래그: 노드 이동 · 배경 드래그: 화면 이동 · 휠: 확대/축소 · 클릭: Obsidian에서 열기
+</div>
+<div id="tooltip"></div>
+
+<script>
+const graphData = /*__GRAPH_DATA__*/;
+
+const TYPE_META = {
+  person:  { label: "인물",     color: "--c-person",  sides: 0 },
+  company: { label: "기업",     color: "--c-company", sides: 4 },
+  concept: { label: "개념",     color: "--c-concept", sides: 6 },
+  index:   { label: "인덱스",   color: "--c-index",   sides: 3 },
+  other:   { label: "기타 문서", color: "--c-other",   sides: 5 },
+  raw:     { label: "raw 원본", color: "--c-raw",     sides: 0 },
+  missing: { label: "누락된 링크", color: "--c-missing", sides: 0 },
+};
+
+const root = getComputedStyle(document.documentElement);
+function cssVar(name) { return root.getPropertyValue(name).trim(); }
+
+// ---- build sim nodes/edges ----
+const nodeById = new Map();
+const W = () => canvas.width / dpr, H = () => canvas.height / dpr;
+
+const nodes = graphData.nodes.map((n) => ({
+  ...n,
+  r: 4 + Math.sqrt(n.degree) * 3.2,
+  x: (Math.random() - 0.5) * 400,
+  y: (Math.random() - 0.5) * 400,
+  vx: 0, vy: 0,
+  fixed: false,
+}));
+nodes.forEach((n) => nodeById.set(n.key, n));
+
+const edges = graphData.edges
+  .map((e) => ({ source: nodeById.get(e.source), target: nodeById.get(e.target) }))
+  .filter((e) => e.source && e.target);
+
+// ---- visibility / filters ----
+const visibleTypes = new Set(Object.keys(TYPE_META).filter((t) => t !== "raw"));
+let searchTerm = "";
+
+function isVisible(n) {
+  if (!visibleTypes.has(n.type)) return false;
+  if (searchTerm && !n.title.toLowerCase().includes(searchTerm) && !n.path?.toLowerCase().includes(searchTerm)) {
+    return false;
+  }
+  return true;
+}
+
+// ---- toolbar: type filter checkboxes ----
+const filtersEl = document.getElementById("type-filters");
+for (const [type, meta] of Object.entries(TYPE_META)) {
+  const count = nodes.filter((n) => n.type === type).length;
+  if (count === 0) continue;
+  const label = document.createElement("label");
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = visibleTypes.has(type);
+  cb.addEventListener("change", () => {
+    if (cb.checked) visibleTypes.add(type);
+    else visibleTypes.delete(type);
+  });
+  const sw = document.createElement("span");
+  sw.className = "swatch";
+  sw.style.background = cssVar(meta.color);
+  label.append(cb, sw, `${meta.label} (${count})`);
+  filtersEl.appendChild(label);
+}
+
+// ---- legend ----
+const legendEl = document.getElementById("legend");
+for (const [type, meta] of Object.entries(TYPE_META)) {
+  if (!nodes.some((n) => n.type === type)) continue;
+  const row = document.createElement("div");
+  row.className = "row";
+  const sw = document.createElement("canvas");
+  sw.width = 16; sw.height = 16;
+  sw.style.width = "16px"; sw.style.height = "16px";
+  const sctx = sw.getContext("2d");
+  drawShape(sctx, 8, 8, 6, meta.sides, cssVar(meta.color), null);
+  const lbl = document.createElement("span");
+  lbl.className = "label";
+  lbl.textContent = meta.label;
+  row.append(sw, lbl);
+  legendEl.appendChild(row);
+}
+
+document.getElementById("stats").textContent =
+  `${nodes.length}개 노드 · ${edges.length}개 링크 · 생성 ${new Date(graphData.generatedAt).toLocaleString("ko-KR")}`;
+
+// ---- search ----
+document.getElementById("search").addEventListener("input", (e) => {
+  searchTerm = e.target.value.trim().toLowerCase();
+});
+
+// ---- canvas setup ----
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+let dpr = Math.max(1, window.devicePixelRatio || 1);
+let view = { x: 0, y: 0, scale: 1 };
+
+function resize() {
+  dpr = Math.max(1, window.devicePixelRatio || 1);
+  canvas.width = window.innerWidth * dpr;
+  canvas.height = window.innerHeight * dpr;
+}
+window.addEventListener("resize", resize);
+resize();
+
+// ---- shape drawing (secondary encoding alongside color) ----
+function drawShape(c, x, y, r, sides, fill, stroke) {
+  c.beginPath();
+  if (sides <= 0) {
+    c.arc(x, y, r, 0, Math.PI * 2);
+  } else {
+    const rot = -Math.PI / 2;
+    for (let i = 0; i < sides; i++) {
+      const a = rot + (i / sides) * Math.PI * 2;
+      const px = x + r * Math.cos(a);
+      const py = y + r * Math.sin(a);
+      if (i === 0) c.moveTo(px, py);
+      else c.lineTo(px, py);
+    }
+    c.closePath();
+  }
+  if (fill) { c.fillStyle = fill; c.fill(); }
+  if (stroke) { c.strokeStyle = stroke; c.lineWidth = 1; c.stroke(); }
+}
+
+// ---- force simulation ----
+let alpha = 1;
+const ALPHA_DECAY = 0.985;
+const ALPHA_MIN = 0.001;
+
+function tick() {
+  if (alpha < ALPHA_MIN) return;
+  const vis = nodes.filter(isVisible);
+  const visSet = new Set(vis);
+
+  // repulsion
+  for (let i = 0; i < vis.length; i++) {
+    const a = vis[i];
+    if (a.fixed) continue;
+    let fx = 0, fy = 0;
+    for (let j = 0; j < vis.length; j++) {
+      if (i === j) continue;
+      const b = vis[j];
+      let dx = a.x - b.x, dy = a.y - b.y;
+      let d2 = dx * dx + dy * dy || 0.01;
+      let d = Math.sqrt(d2);
+      const force = 1800 / d2;
+      fx += (dx / d) * force;
+      fy += (dy / d) * force;
+    }
+    // center pull
+    fx += -a.x * 0.006;
+    fy += -a.y * 0.006;
+    a.vx = (a.vx + fx * alpha) * 0.82;
+    a.vy = (a.vy + fy * alpha) * 0.82;
+  }
+
+  // spring along edges
+  for (const e of edges) {
+    if (!visSet.has(e.source) || !visSet.has(e.target)) continue;
+    const dx = e.target.x - e.source.x, dy = e.target.y - e.source.y;
+    const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+    const target = 70;
+    const f = (d - target) * 0.02 * alpha;
+    const fx = (dx / d) * f, fy = (dy / d) * f;
+    if (!e.source.fixed) { e.source.vx += fx; e.source.vy += fy; }
+    if (!e.target.fixed) { e.target.vx -= fx; e.target.vy -= fy; }
+  }
+
+  for (const n of vis) {
+    if (n.fixed) continue;
+    n.x += n.vx;
+    n.y += n.vy;
+  }
+
+  alpha *= ALPHA_DECAY;
+}
+
+function toScreen(x, y) {
+  return [
+    W() / 2 + (x + view.x) * view.scale,
+    H() / 2 + (y + view.y) * view.scale,
+  ];
+}
+function toWorld(sx, sy) {
+  return [
+    (sx - W() / 2) / view.scale - view.x,
+    (sy - H() / 2) / view.scale - view.y,
+  ];
+}
+
+function draw() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W(), H());
+  ctx.fillStyle = cssVar("--page-plane");
+  ctx.fillRect(0, 0, W(), H());
+
+  const vis = nodes.filter(isVisible);
+  const visSet = new Set(vis);
+
+  // edges
+  for (const e of edges) {
+    if (!visSet.has(e.source) || !visSet.has(e.target)) continue;
+    const isMissing = e.target.type === "missing" || e.source.type === "missing";
+    const [x1, y1] = toScreen(e.source.x, e.source.y);
+    const [x2, y2] = toScreen(e.target.x, e.target.y);
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.strokeStyle = isMissing ? cssVar("--edge-missing") : cssVar("--edge-color");
+    ctx.globalAlpha = isMissing ? 0.55 : 0.45;
+    ctx.lineWidth = 1;
+    if (isMissing) ctx.setLineDash([3, 3]); else ctx.setLineDash([]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+  }
+
+  // nodes
+  for (const n of vis) {
+    const [x, y] = toScreen(n.x, n.y);
+    const meta = TYPE_META[n.type];
+    const r = n.r * view.scale;
+    const isDim = searchTerm && !(n.title.toLowerCase().includes(searchTerm) || n.path?.toLowerCase().includes(searchTerm));
+    ctx.globalAlpha = isDim ? 0.18 : 1;
+    const fill = n.type === "missing"
+      ? "transparent"
+      : cssVar(meta.color);
+    const stroke = n.type === "missing" ? cssVar("--edge-missing") : cssVar("--border");
+    if (n.type === "missing") ctx.setLineDash([2, 2]);
+    drawShape(ctx, x, y, Math.max(r, 3), meta.sides, fill, stroke);
+    ctx.setLineDash([]);
+    if (n === hovered || n === selected) {
+      drawShape(ctx, x, y, Math.max(r, 3) + 3, meta.sides, null, cssVar("--text-primary"));
+    }
+    ctx.globalAlpha = 1;
+
+    if (view.scale > 1.1 || n.degree > 4 || n === hovered) {
+      ctx.fillStyle = cssVar("--text-secondary");
+      ctx.font = "11px system-ui, sans-serif";
+      ctx.textBaseline = "middle";
+      ctx.globalAlpha = isDim ? 0.18 : 0.92;
+      ctx.fillText(n.title, x + r + 5, y);
+      ctx.globalAlpha = 1;
+    }
+  }
+}
+
+let hovered = null;
+let selected = null;
+
+function loop() {
+  tick();
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ---- interaction: pan / zoom / drag / click ----
+let dragging = null; // node being dragged
+let panning = false;
+let panStart = null;
+let lastPointer = { x: 0, y: 0 };
+let moved = false;
+
+function nodeAtScreen(sx, sy) {
+  const [wx, wy] = toWorld(sx, sy);
+  let best = null, bestD = Infinity;
+  for (const n of nodes) {
+    if (!isVisible(n)) continue;
+    const dx = n.x - wx, dy = n.y - wy;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d < n.r + 4 && d < bestD) { best = n; bestD = d; }
+  }
+  return best;
+}
+
+canvas.addEventListener("mousedown", (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+  const n = nodeAtScreen(sx, sy);
+  moved = false;
+  if (n) {
+    dragging = n;
+    n.fixed = true;
+  } else {
+    panning = true;
+    panStart = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
+    canvas.classList.add("dragging");
+  }
+  lastPointer = { x: e.clientX, y: e.clientY };
+});
+
+window.addEventListener("mousemove", (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+
+  if (dragging) {
+    moved = true;
+    const [wx, wy] = toWorld(sx, sy);
+    dragging.x = wx; dragging.y = wy;
+    dragging.vx = 0; dragging.vy = 0;
+    alpha = Math.max(alpha, 0.3);
+  } else if (panning) {
+    moved = true;
+    view.x = panStart.vx + (e.clientX - panStart.x) / view.scale;
+    view.y = panStart.vy + (e.clientY - panStart.y) / view.scale;
+  } else {
+    const n = nodeAtScreen(sx, sy);
+    hovered = n;
+    if (n) {
+      const tt = document.getElementById("tooltip");
+      tt.style.display = "block";
+      tt.style.left = e.clientX + 14 + "px";
+      tt.style.top = e.clientY + 14 + "px";
+      tt.innerHTML = `<div class="t-title">${escapeHtml(n.title)}</div>` +
+        `<div class="t-meta">${TYPE_META[n.type].label}${n.domain ? " · " + escapeHtml(n.domain) : ""}${n.path ? "<br>" + escapeHtml(n.path) : " (미해결 링크)"}</div>`;
+    } else {
+      document.getElementById("tooltip").style.display = "none";
+    }
+  }
+});
+
+window.addEventListener("mouseup", (e) => {
+  if (dragging) {
+    const n = dragging;
+    if (!moved) {
+      selected = n;
+      openInObsidian(n);
+    }
+    n.fixed = false;
+    dragging = null;
+  }
+  if (panning) {
+    panning = false;
+    canvas.classList.remove("dragging");
+  }
+});
+
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+  const [wx, wy] = toWorld(sx, sy);
+  const factor = Math.exp(-e.deltaY * 0.001);
+  view.scale = Math.min(6, Math.max(0.15, view.scale * factor));
+  const [nsx, nsy] = toScreen(wx, wy);
+  view.x += (sx - nsx) / view.scale;
+  view.y += (sy - nsy) / view.scale;
+}, { passive: false });
+
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function openInObsidian(n) {
+  if (!n.path) return; // missing/unresolved node has nowhere to open
+  const url = `obsidian://open?vault=${encodeURIComponent(graphData.vaultName)}&file=${encodeURIComponent(n.path.replace(/\.md$/, ""))}`;
+  window.open(url, "_blank");
+}
+</script>
+</body>
+</html>
